@@ -1,0 +1,7 @@
+Follow these steps when publishing a new version:
+
+1.- Update version number in window app title in:
+   windows > windows_configuration.cpp
+
+2.- Update version number in application drawer footer
+    lib > widgets > drawer

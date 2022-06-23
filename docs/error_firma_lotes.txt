@@ -1,0 +1,89 @@
+En el commit 20/12/2019 se ha implementado el envío de prefirmas de forma decalada (cada 200 ms) para evitar un error que devolvía el servidor al enviar todo el lote seguido. Incluso en un envío de 20 peticiones con 100 ms se ha producido el error. Cuando lo he puesto a 200 ms, enviando 40 peticiones no se ha producido ningún error.
+
+El error que se recibe para alguna de las prefirmas es:
+  <err cd="ERR-03">Se ha recibido un XML mal formado</err>
+  
+Considerando el decalado de 200 ms que es necesario incluir, o hay un error de bajo nivel en flutter o en el servidor al recibir muchas peticiones juntas.
+
+
+Casuística:
+===========
+
+Envío las siguientes 7 peticiones de prefirma. Están todas formadas de la misma forma. Es lo que se ve en el log de flutter justo antes de enviarlas (tanto en xml como en base 64).
+
+<?xml version="1.0" encoding="UTF-8"?><rqttri><reqs><req id="rMHoftx0Yb"><doc docid="nc3muntcQ6" cop="null" sigfrmt="PDF" mdalgo="SHA1"><params></params></doc></req></reqs></rqttri>
+<?xml version="1.0" encoding="UTF-8"?><rqttri><reqs><req id="AkiggXSKts"><doc docid="HgO3AnEqgm" cop="null" sigfrmt="PDF" mdalgo="SHA1"><params></params></doc></req></reqs></rqttri>
+<?xml version="1.0" encoding="UTF-8"?><rqttri><reqs><req id="NxyUbpSvrr"><doc docid="TVzIhi6is5" cop="null" sigfrmt="PDF" mdalgo="SHA1"><params></params></doc></req></reqs></rqttri>
+<?xml version="1.0" encoding="UTF-8"?><rqttri><reqs><req id="AGykGN7kMO"><doc docid="bk2AS87Bxt" cop="null" sigfrmt="PDF" mdalgo="SHA1"><params></params></doc></req></reqs></rqttri>
+<?xml version="1.0" encoding="UTF-8"?><rqttri><reqs><req id="BAKNHtQofG"><doc docid="Zms4we8OvW" cop="null" sigfrmt="PDF" mdalgo="SHA1"><params></params></doc></req></reqs></rqttri>
+<?xml version="1.0" encoding="UTF-8"?><rqttri><reqs><req id="hxbP0VlmRn"><doc docid="2eRW5SFOLk" cop="null" sigfrmt="PDF" mdalgo="SHA1"><params></params></doc></req></reqs></rqttri>
+<?xml version="1.0" encoding="UTF-8"?><rqttri><reqs><req id="w5HIIlg85k"><doc docid="aFp5bROqjR" cop="null" sigfrmt="PDF" mdalgo="SHA1"><params></params></doc></req></reqs></rqttri>
+
+Para la última recibo el siguiente error:
+
+<err cd="ERR-03">Se ha recibido un XML mal formado</err>
+
+Y por eso solo recibo los siguientes resultados finales:
+
+<?xml version="1.0" encoding="UTF-8"?><posts><req id="AkiggXSKts" status="OK"/></posts>
+<?xml version="1.0" encoding="UTF-8"?><posts><req id="BAKNHtQofG" status="OK"/></posts>
+<?xml version="1.0" encoding="UTF-8"?><posts><req id="NxyUbpSvrr" status="OK"/></posts>
+<?xml version="1.0" encoding="UTF-8"?><posts><req id="hxbP0VlmRn" status="OK"/></posts>
+<?xml version="1.0" encoding="UTF-8"?><posts><req id="rMHoftx0Yb" status="OK"/></posts>
+<?xml version="1.0" encoding="UTF-8"?><posts><req id="AGykGN7kMO" status="OK"/></posts>
+
+
+Luego vuelvo a enviar el que ha fallado junto con otras y no hay ningún problema:
+
+<?xml version="1.0" encoding="UTF-8"?><rqttri><reqs><req id="w5HIIlg85k"><doc docid="aFp5bROqjR" cop="null" sigfrmt="PDF" mdalgo="SHA1"><params></params></doc></req></reqs></rqttri>
+<?xml version="1.0" encoding="UTF-8"?><rqttri><reqs><req id="JTokUiLwa3"><doc docid="ZhMvzr7d6S" cop="null" sigfrmt="PDF" mdalgo="SHA1"><params></params></doc></req></reqs></rqttri>
+<?xml version="1.0" encoding="UTF-8"?><rqttri><reqs><req id="JkZERGKcPm"><doc docid="pGpVr1cNSv" cop="null" sigfrmt="PDF" mdalgo="SHA1"><params></params></doc></req></reqs></rqttri>
+<?xml version="1.0" encoding="UTF-8"?><rqttri><reqs><req id="dY5sL4tT1j"><doc docid="6kyOKl31s5" cop="null" sigfrmt="PDF" mdalgo="SHA1"><params></params></doc></req></reqs></rqttri>
+<?xml version="1.0" encoding="UTF-8"?><rqttri><reqs><req id="CGC4GekdJv"><doc docid="AWFrixz485" cop="null" sigfrmt="PDF" mdalgo="SHA1"><params></params></doc></req></reqs></rqttri>
+<?xml version="1.0" encoding="UTF-8"?><rqttri><reqs><req id="jRwt9O1lCf"><doc docid="GohpFeLkds" cop="null" sigfrmt="PDF" mdalgo="SHA1"><params></params></doc></req></reqs></rqttri>
+
+
+<?xml version="1.0" encoding="UTF-8"?><posts><req id="jRwt9O1lCf" status="OK"/></posts>
+<?xml version="1.0" encoding="UTF-8"?><posts><req id="JkZERGKcPm" status="OK"/></posts>
+<?xml version="1.0" encoding="UTF-8"?><posts><req id="w5HIIlg85k" status="OK"/></posts>
+<?xml version="1.0" encoding="UTF-8"?><posts><req id="CGC4GekdJv" status="OK"/></posts>
+<?xml version="1.0" encoding="UTF-8"?><posts><req id="JTokUiLwa3" status="OK"/></posts>
+<?xml version="1.0" encoding="UTF-8"?><posts><req id="dY5sL4tT1j" status="OK"/></posts>
+
+
+
+Siguiendo con las pruebas, al cabo de un rato y aparentemente de forma aleatoria me vuelve a fallar (fallan más cuando el lote es más grande). Y aparece un segundo error que puede ser consecuencia del primero.
+
+
+El primer error es como el anterior:
+
+<err cd="ERR-03">Se ha recibido un XML mal formado</err>
+
+Y el segundo:
+
+<err cd="ERR-10">Error desconocido en las peticiones al portafirmas</err>
+
+
+<?xml version="1.0" encoding="UTF-8"?><rqttri><reqs><req id="rndLVzQDNy"><doc docid="Dlix70xxNk" cop="null" sigfrmt="PDF" mdalgo="SHA1"><params></params></doc></req></reqs></rqttri>
+<?xml version="1.0" encoding="UTF-8"?><rqttri><reqs><req id="BzuHSrtndR"><doc docid="GQyJ2sgMzR" cop="null" sigfrmt="PDF" mdalgo="SHA1"><params></params></doc></req></reqs></rqttri>
+<?xml version="1.0" encoding="UTF-8"?><rqttri><reqs><req id="5FtoS8jk6Z"><doc docid="dp3A1GmfRR" cop="null" sigfrmt="PDF" mdalgo="SHA1"><params></params></doc></req></reqs></rqttri>
+<?xml version="1.0" encoding="UTF-8"?><rqttri><reqs><req id="Frdj7GVz3A"><doc docid="xhNcynwvbv" cop="null" sigfrmt="PDF" mdalgo="SHA1"><params></params></doc></req></reqs></rqttri>
+<?xml version="1.0" encoding="UTF-8"?><rqttri><reqs><req id="Lq1TOWBuPq"><doc docid="OGJQqoDnTb" cop="null" sigfrmt="PDF" mdalgo="SHA1"><params></params></doc></req></reqs></rqttri>
+<?xml version="1.0" encoding="UTF-8"?><rqttri><reqs><req id="Y1KYDJjA0a"><doc docid="mpkQbSQJHm" cop="null" sigfrmt="PDF" mdalgo="SHA1"><params></params></doc></req></reqs></rqttri>
+<?xml version="1.0" encoding="UTF-8"?><rqttri><reqs><req id="hPuKIW2Bdq"><doc docid="KTgRTe8Kja" cop="null" sigfrmt="PDF" mdalgo="SHA1"><params></params></doc></req></reqs></rqttri>
+<?xml version="1.0" encoding="UTF-8"?><rqttri><reqs><req id="uJFuV0kibv"><doc docid="J47i5SFjeh" cop="null" sigfrmt="PDF" mdalgo="SHA1"><params></params></doc></req></reqs></rqttri>
+<?xml version="1.0" encoding="UTF-8"?><rqttri><reqs><req id="1K11ISdRme"><doc docid="Dic0R2XviB" cop="null" sigfrmt="PDF" mdalgo="SHA1"><params></params></doc></req></reqs></rqttri>
+<?xml version="1.0" encoding="UTF-8"?><rqttri><reqs><req id="ftcjh54Dd9"><doc docid="wmlFShgd9f" cop="null" sigfrmt="PDF" mdalgo="SHA1"><params></params></doc></req></reqs></rqttri>
+
+Las dos peticiones en rojo no avanzan:
+
+<?xml version="1.0" encoding="UTF-8"?><posts><req id="BzuHSrtndR" status="OK"/></posts>
+<?xml version="1.0" encoding="UTF-8"?><posts><req id="rndLVzQDNy" status="OK"/></posts>
+<?xml version="1.0" encoding="UTF-8"?><posts><req id="uJFuV0kibv" status="OK"/></posts>
+<?xml version="1.0" encoding="UTF-8"?><posts><req id="hPuKIW2Bdq" status="OK"/></posts>
+<?xml version="1.0" encoding="UTF-8"?><posts><req id="Y1KYDJjA0a" status="OK"/></posts>
+<?xml version="1.0" encoding="UTF-8"?><posts><req id="Frdj7GVz3A" status="OK"/></posts>
+<?xml version="1.0" encoding="UTF-8"?><posts><req id="Lq1TOWBuPq" status="OK"/></posts>
+<?xml version="1.0" encoding="UTF-8"?><posts><req id="1K11ISdRme" status="OK"/></posts>
+
+Pero las vuelvo a enviar con el mismo xml y no hay ningún problema.

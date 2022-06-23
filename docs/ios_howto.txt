@@ -1,0 +1,8 @@
+
+HOW TO ADD TEST CERTIFICATES
+
+1. Open the project file in Xcode.
+2. Select the certificate p12 or pfx file from the file manager and drag that file into the Runner/test.certs directory,
+   [my_project]/ios/Runner/test.certs/FILE.pfx.
+3. A dialog will show up and ask you to select the targets, select the Runner target. Check "copy items" so the
+   certificate is really copied into de test.certs directory
