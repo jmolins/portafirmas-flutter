@@ -142,7 +142,7 @@ class RequestPageState extends State<RequestPage> {
       showMessage(
         context: context,
         title: 'Error',
-        message: result.errorMsg!,
+        message: result.errorMsg!.isEmpty ? null : result.errorMsg!,
         modal: true,
       );
     } else {

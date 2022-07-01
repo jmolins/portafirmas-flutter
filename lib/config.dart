@@ -48,6 +48,8 @@ class Config {
   late String serverURL;
   late String serverName;
 
+  static int deafultRequestPageSize = 50;
+
   bool storagePermissionReady = false;
   String? _applicationPath;
   String? _tempStoragePath;

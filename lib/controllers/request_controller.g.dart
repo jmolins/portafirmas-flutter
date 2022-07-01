@@ -25,35 +25,21 @@ mixin _$RequestController on _RequestController, Store {
     });
   }
 
-  late final _$otherRequestsAtom =
-      Atom(name: '_RequestController.otherRequests', context: context);
+  late final _$loadUnresolvedRequestsFutureAtom = Atom(
+      name: '_RequestController.loadUnresolvedRequestsFuture',
+      context: context);
 
   @override
-  ObservableList<SignRequest> get otherRequests {
-    _$otherRequestsAtom.reportRead();
-    return super.otherRequests;
+  ObservableFuture<dynamic>? get loadUnresolvedRequestsFuture {
+    _$loadUnresolvedRequestsFutureAtom.reportRead();
+    return super.loadUnresolvedRequestsFuture;
   }
 
   @override
-  set otherRequests(ObservableList<SignRequest> value) {
-    _$otherRequestsAtom.reportWrite(value, super.otherRequests, () {
-      super.otherRequests = value;
-    });
-  }
-
-  late final _$activeRequestDetailAtom =
-      Atom(name: '_RequestController.activeRequestDetail', context: context);
-
-  @override
-  RequestDetail? get activeRequestDetail {
-    _$activeRequestDetailAtom.reportRead();
-    return super.activeRequestDetail;
-  }
-
-  @override
-  set activeRequestDetail(RequestDetail? value) {
-    _$activeRequestDetailAtom.reportWrite(value, super.activeRequestDetail, () {
-      super.activeRequestDetail = value;
+  set loadUnresolvedRequestsFuture(ObservableFuture<dynamic>? value) {
+    _$loadUnresolvedRequestsFutureAtom
+        .reportWrite(value, super.loadUnresolvedRequestsFuture, () {
+      super.loadUnresolvedRequestsFuture = value;
     });
   }
 
@@ -89,14 +75,79 @@ mixin _$RequestController on _RequestController, Store {
     });
   }
 
+  late final _$otherRequestsAtom =
+      Atom(name: '_RequestController.otherRequests', context: context);
+
+  @override
+  ObservableList<SignRequest> get otherRequests {
+    _$otherRequestsAtom.reportRead();
+    return super.otherRequests;
+  }
+
+  @override
+  set otherRequests(ObservableList<SignRequest> value) {
+    _$otherRequestsAtom.reportWrite(value, super.otherRequests, () {
+      super.otherRequests = value;
+    });
+  }
+
+  late final _$loadOtherRequestsFutureAtom = Atom(
+      name: '_RequestController.loadOtherRequestsFuture', context: context);
+
+  @override
+  ObservableFuture<dynamic>? get loadOtherRequestsFuture {
+    _$loadOtherRequestsFutureAtom.reportRead();
+    return super.loadOtherRequestsFuture;
+  }
+
+  @override
+  set loadOtherRequestsFuture(ObservableFuture<dynamic>? value) {
+    _$loadOtherRequestsFutureAtom
+        .reportWrite(value, super.loadOtherRequestsFuture, () {
+      super.loadOtherRequestsFuture = value;
+    });
+  }
+
+  late final _$activeRequestDetailAtom =
+      Atom(name: '_RequestController.activeRequestDetail', context: context);
+
+  @override
+  RequestDetail? get activeRequestDetail {
+    _$activeRequestDetailAtom.reportRead();
+    return super.activeRequestDetail;
+  }
+
+  @override
+  set activeRequestDetail(RequestDetail? value) {
+    _$activeRequestDetailAtom.reportWrite(value, super.activeRequestDetail, () {
+      super.activeRequestDetail = value;
+    });
+  }
+
+  late final _$_RequestControllerActionController =
+      ActionController(name: '_RequestController', context: context);
+
+  @override
+  Future<void> loadInitialRequests(String requestsState) {
+    final _$actionInfo = _$_RequestControllerActionController.startAction(
+        name: '_RequestController.loadInitialRequests');
+    try {
+      return super.loadInitialRequests(requestsState);
+    } finally {
+      _$_RequestControllerActionController.endAction(_$actionInfo);
+    }
+  }
+
   @override
   String toString() {
     return '''
 unresolvedRequests: ${unresolvedRequests},
-otherRequests: ${otherRequests},
-activeRequestDetail: ${activeRequestDetail},
+loadUnresolvedRequestsFuture: ${loadUnresolvedRequestsFuture},
 requestResult: ${requestResult},
-requestsResult: ${requestsResult}
+requestsResult: ${requestsResult},
+otherRequests: ${otherRequests},
+loadOtherRequestsFuture: ${loadOtherRequestsFuture},
+activeRequestDetail: ${activeRequestDetail}
     ''';
   }
 }

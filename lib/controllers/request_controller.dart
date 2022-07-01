@@ -23,14 +23,16 @@ import 'package:portafirmas/api/approve_response_parser.dart';
 import 'package:portafirmas/api/reject_response_parser.dart';
 import 'package:portafirmas/api/request_detail_response_parser.dart';
 import 'package:portafirmas/api/request_list_response_parser.dart';
+import 'package:portafirmas/config.dart';
 import 'package:portafirmas/model/request_detail.dart';
 import 'package:portafirmas/model/request_result.dart';
 import 'package:portafirmas/model/sign_request.dart';
 import 'package:portafirmas/services/tri_signer.dart';
+import 'package:synchronized/synchronized.dart';
 
 part 'request_controller.g.dart';
 
-enum ServerRequestState { waiting, quiet }
+enum PageLoadType { initial, previous, next }
 
 class RequestController extends _RequestController with _$RequestController {
   RequestController(Api api) : super(api);
@@ -39,42 +41,85 @@ class RequestController extends _RequestController with _$RequestController {
 abstract class _RequestController with Store {
   final Api api;
 
+  final _lock = Lock();
+
+  // ----------------- Unresolved requests ------------------------
+
   @observable
   var unresolvedRequests = ObservableList<SignRequest>();
 
+  @observable
+  ObservableFuture? loadUnresolvedRequestsFuture;
+
+  /// The page downloaded from server and loaded into the list
+  int unresolvedPresentPage = 1;
+
+  /// Tells if there are more pages in the server beyond the presently loaded one
+  bool unresolvedHasMore = false;
+
+  final int _requestPageSize = Config.deafultRequestPageSize;
+
+  /// Result used in operations where a single request is involved.
+  @observable
+  RequestResult requestResult = RequestResult();
+
+  /// Result used in operations where multiple requests are involved.
+  @observable
+  RequestResult requestsResult = RequestResult();
+
+  // ----------------- Other requests ---------------------------
+
   // This field will be used for requests in the signed and rejected tab
-  // They are treated differently because these tabs are accessed very rarely
+  // They are treated differently because these tabs are rarely accessed
   @observable
   var otherRequests = ObservableList<SignRequest>();
 
   @observable
+  ObservableFuture? loadOtherRequestsFuture;
+
+  // ----------------- Active requests -------------------------
+
+  @observable
   RequestDetail? activeRequestDetail;
-
-  /// For operations where a single request is involved
-  @observable
-  RequestResult requestResult = RequestResult();
-
-  /// For operations where multiple requests are involved
-  @observable
-  RequestResult requestsResult = RequestResult();
-
-  ServerRequestState eventsState = ServerRequestState.quiet;
 
   _RequestController(this.api);
 
-  Future<void> getRequests(String requestsState) async {
-    // This is to force the widget to show the circular progress indicator
+  @action
+  Future<void> loadInitialRequests(String requestsState) {
     if (requestsState == SignRequest.stateUnresolved) {
-      unresolvedRequests = ObservableList<SignRequest>();
+      return loadUnresolvedRequestsFuture = ObservableFuture<void>(getRequests(requestsState));
     } else {
-      otherRequests = ObservableList<SignRequest>();
+      return loadOtherRequestsFuture = ObservableFuture<void>(getRequests(requestsState));
     }
-    eventsState = ServerRequestState.waiting;
-    var response = await api.getSignRequests(requestsState, null, 1, 50);
-    var requests =
-        RequestListResponseParser.parse(utf8.decode(response.codeUnits)).currentSignRequests;
-    eventsState = ServerRequestState.quiet;
+  }
+
+  /// Retrieves requests from server.
+  Future<void> getRequests(String requestsState,
+      [PageLoadType pageLoadType = PageLoadType.initial]) async {
+    var pageToRequest = 0;
+    if (pageLoadType == PageLoadType.initial) {
+      pageToRequest = 1;
+    } else if (pageLoadType == PageLoadType.previous) {
+      pageToRequest = unresolvedPresentPage - 1;
+    } else if (pageLoadType == PageLoadType.next) {
+      // If we are on a page
+      // - marked as having more requests in the next pages
+      // - and the number of requests in the page has decreased after signing them,
+      // we will reload the same page
+      // Loading next page would have the effect of skipping some requests.
+      if (unresolvedHasMore && unresolvedRequests.length < _requestPageSize) {
+        pageToRequest = unresolvedPresentPage;
+      } else {
+        pageToRequest = unresolvedPresentPage + 1;
+      }
+    }
+    var response = await api.getSignRequests(requestsState, null, pageToRequest, _requestPageSize);
+    var parsedResult = RequestListResponseParser.parse(utf8.decode(response.codeUnits));
+    var requests = parsedResult.currentSignRequests;
+    var totalRequests = parsedResult.totalSignRequests;
     if (requestsState == SignRequest.stateUnresolved) {
+      unresolvedPresentPage = pageToRequest;
+      unresolvedHasMore = pageToRequest * _requestPageSize < totalRequests;
       unresolvedRequests = [...requests].asObservable();
     } else {
       otherRequests = [...requests].asObservable();
@@ -94,10 +139,10 @@ abstract class _RequestController with Store {
       if (e is ErrorMessageException) {
         error = 'Error al cargar los detalles de la petición';
       }
-      // This will make stop waiting for the detail
-      activeRequestDetail = null;
-      // This will forward the error to display a message
-      requestResult = RequestResult(id: request.id, statusOk: false, errorMsg: error);
+      RequestDetail reqDetail = RequestDetail(request.id);
+      reqDetail.statusOk = false;
+      reqDetail.message = error;
+      activeRequestDetail = reqDetail;
     });
   }
 
@@ -115,7 +160,15 @@ abstract class _RequestController with Store {
     // interval to avoid errors in the server when sending a handful of them.
     requestProducer(const Duration(milliseconds: 200), requests).listen((request) {
       TriSigner.sign(request, api).then((result) {
-        requestsResult = result;
+        // Remove requests from local unresolvedRequests in a synchronized way
+        // since results arrive asynchronously from server
+        _lock.synchronized(() {
+          // If the status is ok (correctly processed), we remove the request from the list
+          if (result.statusOk == true) {
+            unresolvedRequests.remove(request);
+          }
+          requestsResult = result;
+        });
       });
     });
   }
@@ -123,6 +176,15 @@ abstract class _RequestController with Store {
   // Signs a single request
   Future<void> signRequest(SignRequest request) {
     return TriSigner.sign(request, api).then((result) {
+      // If the status is ok (correctly processed), we remove the request from the list
+      if (result.statusOk == true) {
+        for (var req in unresolvedRequests) {
+          if (request.id == req.id) {
+            unresolvedRequests.remove(req);
+            break;
+          }
+        }
+      }
       requestResult = result;
     });
   }
@@ -137,7 +199,19 @@ abstract class _RequestController with Store {
 
       return api.approveRequests(requestIds).then((response) {
         ApproveResponseParser.parse(response).forEach((result) {
-          requestsResult = result;
+          // Remove requests from local unresolvedRequests in a synchronized way
+          // since results arrive asynchronously from parser
+          _lock.synchronized(() async {
+            if (result.statusOk == true) {
+              for (var req in unresolvedRequests) {
+                if (result.id == req.id) {
+                  unresolvedRequests.remove(req);
+                  break;
+                }
+              }
+            }
+            requestsResult = result;
+          });
         });
         // ignore: avoid_types_on_closure_parameters
       }).catchError((Object e) {
@@ -160,6 +234,15 @@ abstract class _RequestController with Store {
 
     return api.approveRequests(requestIds).then((response) {
       ApproveResponseParser.parse(response).forEach((result) {
+        // No need to synchronize as there will be just one result
+        if (result.statusOk == true) {
+          for (var req in unresolvedRequests) {
+            if (result.id == req.id) {
+              unresolvedRequests.remove(req);
+              break;
+            }
+          }
+        }
         requestResult = result;
       });
       // ignore: avoid_types_on_closure_parameters
@@ -186,7 +269,19 @@ abstract class _RequestController with Store {
 
       return api.rejectRequests(requestIds, reason).then((response) {
         RejectResponseParser.parse(response).forEach((result) {
-          requestsResult = result;
+          // Remove requests from local unresolvedRequests in a synchronized way
+          // since results arrive asynchronously from parser
+          _lock.synchronized(() async {
+            if (result.statusOk == true) {
+              for (var req in unresolvedRequests) {
+                if (result.id == req.id) {
+                  unresolvedRequests.remove(req);
+                  break;
+                }
+              }
+            }
+            requestsResult = result;
+          });
         });
         // ignore: avoid_types_on_closure_parameters
       }).catchError((Object e) {
@@ -209,6 +304,15 @@ abstract class _RequestController with Store {
 
     return api.rejectRequests(requestIds, reason).then((response) {
       RejectResponseParser.parse(response).forEach((result) {
+        // No need to synchronize as there will be just one result
+        if (result.statusOk == true) {
+          for (var req in unresolvedRequests) {
+            if (result.id == req.id) {
+              unresolvedRequests.remove(req);
+              break;
+            }
+          }
+        }
         requestResult = result;
       });
       // ignore: avoid_types_on_closure_parameters

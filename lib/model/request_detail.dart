@@ -33,5 +33,9 @@ class RequestDetail extends SignRequest {
 
   String? rejectReason;
 
+  /// The status of the operation to get the request details.
+  /// If false, the error message may be placed in the 'message' field
+  bool statusOk = true;
+
   RequestDetail(String id) : super.withId(id);
 }

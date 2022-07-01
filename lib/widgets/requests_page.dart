@@ -33,8 +33,14 @@ import 'package:portafirmas/widgets/request_item.dart';
 import 'package:portafirmas/widgets/request_page.dart';
 import 'package:provider/provider.dart';
 import 'package:rxdart/rxdart.dart';
+import 'package:synchronized/synchronized.dart';
 
 typedef OnRequestsReceivedCallback = void Function(String requestsXml);
+
+const String addOperation = 'add';
+const String removeOperation = 'remove';
+const String clearOperation = 'clear';
+const String selectAllOperation = 'select_all';
 
 class RequestsPage extends StatefulWidget {
   static const String path = '/requests';
@@ -47,6 +53,11 @@ class RequestsPage extends StatefulWidget {
 
 class RequestsPageState extends State<RequestsPage> with SingleTickerProviderStateMixin {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+
+  var unresolvedRefreshkey = GlobalKey<RefreshIndicatorState>();
+  var otherRefreshkey = GlobalKey<RefreshIndicatorState>();
+
+  final _lock = Lock();
 
   UserController? _userController;
   RequestController? _requestController;
@@ -66,14 +77,19 @@ class RequestsPageState extends State<RequestsPage> with SingleTickerProviderSta
 
   final TextEditingController _rejectTextFieldController = TextEditingController();
 
-  List<SignRequest> selectedRequests = <SignRequest>[];
+  final _selectedRequests = <SignRequest>[];
+  final _previousSelectedRequests = <String>[];
   bool _allSelected = false;
 
   int remainingRequestsCount = 0;
   int errorRequestsCount = 0;
   bool processingDialog = false;
 
-  static const int pageSize = 50;
+  // The page downloaded from server
+  PageLoadType _pageLoadType = PageLoadType.initial;
+
+  // When the list refresh is called from the RefreshIndicator itself by pulling down
+  bool _refreshCalledFromRefreshIndicator = true;
 
   // Stream used by a request item to learn if it has been read and needs to update its ui
   final _readController = PublishSubject<String>();
@@ -98,7 +114,7 @@ class RequestsPageState extends State<RequestsPage> with SingleTickerProviderSta
     if (_requestController == null) {
       _requestController = Provider.of<RequestController>(context);
       // Launch request to get the list of unresolved requests for tab 0
-      _refreshList();
+      _requestController!.loadInitialRequests(SignRequest.stateUnresolved);
     }
   }
 
@@ -131,6 +147,16 @@ class RequestsPageState extends State<RequestsPage> with SingleTickerProviderSta
     }
     if (requestDetail == null) return;
 
+    if (requestDetail.statusOk == false) {
+      await showMessage(
+        context: context,
+        title: 'Error',
+        message: requestDetail.message,
+        modal: true,
+      );
+      return;
+    }
+
     // Tell the new items that the request has been read
     _readController.add(requestDetail.id);
 
@@ -145,53 +171,16 @@ class RequestsPageState extends State<RequestsPage> with SingleTickerProviderSta
     );
     // If not null (back button) and true (correctly signed), reload the
     if (result != null && result == true) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        showMessage(
-          context: context,
-          message: 'Petición procesada con ÉXITO',
-          modal: true,
-          showActions: false,
-        );
-        _refreshList();
-        // Allow two seconds for the user to see the above result message
-        Future.delayed(const Duration(seconds: 2), () {
-          Navigator.of(context).pop();
-        });
+      setState(() {
+        // remove from selected
+        _maintainSelectedRequests(removeOperation, null, requestDetail.id);
       });
-    }
-  }
-
-  void _onRequestUpdated(SignRequest changedRequest) {
-    if (changedRequest.selected) {
-      selectedRequests.add(changedRequest);
-    } else {
-      for (int i = 0; i < selectedRequests.length; i++) {
-        if (selectedRequests[i].id == changedRequest.id) {
-          selectedRequests.removeAt(i);
-        }
-      }
-    }
-    setState(() {});
-  }
-
-  void _onRequestsResult(RequestResult result) {
-    remainingRequestsCount--;
-    if (!result.statusOk) errorRequestsCount++;
-    if (remainingRequestsCount <= 0) {
-      if (processingDialog) {
-        Navigator.of(context).pop();
-        processingDialog = false;
-      }
-      String message =
-          errorRequestsCount == 0 ? 'Peticiones procesadas con ÉXITO' : 'ERROR en alguna petición';
-
-      showMessage(
+      unawaited(showMessage(
         context: context,
-        message: message,
+        message: 'Petición procesada con ÉXITO',
         modal: true,
         showActions: false,
-      );
-      _refreshList();
+      ));
       // Allow two seconds for the user to see the above result message
       Future.delayed(const Duration(seconds: 2), () {
         Navigator.of(context).pop();
@@ -199,18 +188,111 @@ class RequestsPageState extends State<RequestsPage> with SingleTickerProviderSta
     }
   }
 
-  void _onRequestResult(RequestResult result) {
-    if (processingDialog) {
-      Navigator.of(context).pop();
-      processingDialog = false;
-    }
-    if (!result.statusOk) {
+  void _onRequestUpdated(SignRequest changedRequest) {
+    setState(() {
+      if (changedRequest.selected) {
+        _maintainSelectedRequests(addOperation, changedRequest);
+      } else {
+        _maintainSelectedRequests(removeOperation, changedRequest);
+      }
+    });
+  }
+
+  void _onRequestsResult(RequestResult result) {
+    // Do this in a synchronized way since results arrive asynchronously from controller
+    _lock.synchronized(() {
+      remainingRequestsCount--;
+      // If correctly processed, remove the request form the selection
+      if (result.statusOk) {
+        _maintainSelectedRequests(removeOperation, null, result.id);
+      } else {
+        errorRequestsCount++;
+      }
+    });
+    if (remainingRequestsCount <= 0) {
+      if (processingDialog) {
+        Navigator.of(context).pop();
+        processingDialog = false;
+      }
+      String message = errorRequestsCount == 0
+          ? (_selectedRequests.length == 1
+              ? 'La petición se ha procesado correctamente'
+              : 'Las peticiones se han procesado correctamente')
+          : (_selectedRequests.length == 1
+              ? 'Error al procesar la petición'
+              : 'Error al procesar alguna de las peticiones');
+
       showMessage(
         context: context,
-        title: 'Error',
-        message: result.errorMsg!,
+        message: message,
         modal: true,
+        showActions: false,
       );
+      // Allow two seconds for the user to see the above result message
+      Future.delayed(const Duration(seconds: 2), () {
+        Navigator.of(context).pop();
+      });
+    }
+  }
+
+  void _maintainSelectedRequests(String operation, [SignRequest? request, String? requestId]) {
+    if (operation == addOperation) {
+      _selectedRequests.add(request!);
+    } else if (operation == removeOperation) {
+      for (int i = 0; i < _selectedRequests.length; i++) {
+        String? id = requestId ?? request!.id;
+        if (_selectedRequests[i].id == id) {
+          _selectedRequests.removeAt(i);
+        }
+      }
+    } else if (operation == selectAllOperation) {
+      _allSelected = true;
+      _selectedRequests.clear();
+      for (SignRequest request in _requestController!.unresolvedRequests) {
+        request.selected = true;
+        _selectedRequests.add(request);
+      }
+    } else if (operation == clearOperation) {
+      _allSelected = false;
+      _selectedRequests.clear();
+      for (SignRequest request in _requestController!.unresolvedRequests) {
+        request.selected = false;
+      }
+    }
+    _previousSelectedRequests.clear();
+    for (var request in _selectedRequests) {
+      _previousSelectedRequests.add(request.id);
+    }
+  }
+
+  // Upon reloading requests from server, the selections are updated based
+  // on the requests that were selected before the refresh
+  void _reselectNewRequests() {
+    _selectedRequests.clear();
+    _allSelected = false;
+    var requests = _requestController!.unresolvedRequests;
+    // Set new selected requests based on previous selections
+    for (var request in requests) {
+      if (_previousSelectedRequests.contains(request.id)) {
+        request.selected = true;
+        _selectedRequests.add(request);
+      }
+    }
+    // Reset previous selections
+    // Previously selected requests might have independently disappeared on the server
+    _previousSelectedRequests.clear();
+    for (var request in _selectedRequests) {
+      _previousSelectedRequests.add(request.id);
+    }
+  }
+
+  void _onRefreshList({PageLoadType pageLoadType = PageLoadType.initial}) {
+    if (_currentState == SignRequest.stateUnresolved) {
+      _pageLoadType = pageLoadType;
+      _refreshCalledFromRefreshIndicator = false;
+      unresolvedRefreshkey.currentState!.show();
+    } else {
+      otherRefreshkey.currentState!.show();
     }
   }
 
@@ -218,20 +300,22 @@ class RequestsPageState extends State<RequestsPage> with SingleTickerProviderSta
   // and updated on single or group request handling. Hence, selections are not
   // cleared in that case
   Future<void> _refreshList() {
-    return _requestController!.getRequests(_currentState).then((_) {
-      setState(() {
-        if (_currentState == SignRequest.stateUnresolved) {
-          selectedRequests.clear();
-          _allSelected = false;
-        }
-      });
+    if (_refreshCalledFromRefreshIndicator) {
+      _pageLoadType = PageLoadType.initial;
+    }
+    _refreshCalledFromRefreshIndicator = true;
+    return _requestController!.getRequests(_currentState, _pageLoadType).then((_) {
+      if (_currentState == SignRequest.stateUnresolved) {
+        // Select the newly loaded requests based on the selections previously available
+        _reselectNewRequests();
+      }
       // ignore: avoid_types_on_closure_parameters
     }).catchError((Object e) {
-      setState(() {
-        if (_currentState == SignRequest.stateUnresolved) {
-          selectedRequests.clear();
-        }
-      });
+      if (_currentState == SignRequest.stateUnresolved) {
+        setState(() {
+          _maintainSelectedRequests(clearOperation, null);
+        });
+      }
       if (e is NetworkException) {
         showMessage(context: context, title: 'Error', message: 'Error de red', modal: true);
       } else if (e is UnauthorizedException) {
@@ -241,13 +325,13 @@ class RequestsPageState extends State<RequestsPage> with SingleTickerProviderSta
       } else {
         showMessage(context: context, title: 'Error', message: 'Error de descarga', modal: true);
       }
-    }); //, test: (e) => e is NetworkException);
+    });
   }
 
   String _getContentForConfirmDialog() {
     int countApprove = 0, countSign = 0;
 
-    for (SignRequest request in selectedRequests) {
+    for (SignRequest request in _selectedRequests) {
       if (request.type == RequestType.approve) {
         countApprove++;
       } else {
@@ -330,9 +414,7 @@ class RequestsPageState extends State<RequestsPage> with SingleTickerProviderSta
       // Reload requests other than unresolved ones
       if (_currentTabIndex != unresolvedRequestsTab) {
         _currentTabIndex = _tabController.index;
-        //showProcessingDialog(context, 'Actualizando...');
-        //processingDialog = true;
-        _refreshList();
+        _requestController!.loadInitialRequests(_currentState);
       }
     }
   }
@@ -347,7 +429,7 @@ class RequestsPageState extends State<RequestsPage> with SingleTickerProviderSta
     if (await showConfirmDialog(context, 'Aviso', _getContentForConfirmDialog())) {
       List<SignRequest> signRequests = [];
       List<SignRequest> approveRequests = [];
-      for (SignRequest request in selectedRequests) {
+      for (SignRequest request in _selectedRequests) {
         if (request.type == RequestType.signature) {
           signRequests.add(request);
         } else {
@@ -362,7 +444,7 @@ class RequestsPageState extends State<RequestsPage> with SingleTickerProviderSta
         // ignore: unawaited_futures
         _requestController!.approveRequests(approveRequests);
       }
-      remainingRequestsCount = selectedRequests.length;
+      remainingRequestsCount = _selectedRequests.length;
       errorRequestsCount = 0;
       // ignore: unawaited_futures
       showProcessingDialog(context, 'Procesando ...');
@@ -374,8 +456,8 @@ class RequestsPageState extends State<RequestsPage> with SingleTickerProviderSta
     String? reason = await _showRejectDialog(context);
     if (reason != null) {
       // ignore: unawaited_futures
-      _requestController!.rejectRequests(selectedRequests, reason);
-      remainingRequestsCount = selectedRequests.length;
+      _requestController!.rejectRequests(_selectedRequests, reason);
+      remainingRequestsCount = _selectedRequests.length;
       errorRequestsCount = 0;
       if (!mounted) return;
       // ignore: unawaited_futures
@@ -385,59 +467,95 @@ class RequestsPageState extends State<RequestsPage> with SingleTickerProviderSta
   }
 
   void _handleSelectAll() {
-    _allSelected = true;
     setState(() {
-      selectedRequests.clear();
-      for (SignRequest request in _requestController!.unresolvedRequests) {
-        request.selected = true;
-        selectedRequests.add(request);
-      }
+      _maintainSelectedRequests(selectAllOperation, null);
     });
   }
 
   void _handleUnselectAll() {
-    _allSelected = false;
     setState(() {
-      selectedRequests.clear();
-      for (SignRequest request in _requestController!.unresolvedRequests) {
-        request.selected = false;
-      }
+      _maintainSelectedRequests(clearOperation, null);
     });
+  }
+
+  Widget _buildRequestItem(SignRequest request) {
+    return RequestItem(
+      request: request,
+      onTap: () => _handleRequestPressed(request),
+      onRequestUpdated: _onRequestUpdated,
+      stream: request.view == SignRequest.viewNew ? _readController.stream : null,
+    );
+  }
+
+  Widget _buildNavigationItem() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 30.0, vertical: 15.0),
+      child: Row(
+        children: [
+          if (_requestController!.unresolvedPresentPage > 1) ...[
+            ElevatedButton(
+              onPressed: () {
+                _onRefreshList(pageLoadType: PageLoadType.previous);
+              },
+              child: const Icon(Icons.keyboard_double_arrow_left),
+            )
+          ],
+          Expanded(child: Container()),
+          if (_requestController!.unresolvedHasMore) ...[
+            ElevatedButton(
+              onPressed: () {
+                _onRefreshList(pageLoadType: PageLoadType.next);
+              },
+              child: const Icon(Icons.keyboard_double_arrow_right),
+            )
+          ],
+        ],
+      ),
+    );
   }
 
   Widget _buildUnresolvedRequestsPage() {
     return Observer(builder: (_) {
       var requests = _requestController!.unresolvedRequests;
+      var itemCount = requests.length;
+      bool lastItemIsNavigation = false;
+      // If navigation is shown, add a last item to the list
+      if (_requestController!.unresolvedHasMore || _requestController!.unresolvedPresentPage > 1) {
+        lastItemIsNavigation = true;
+        itemCount = requests.length + 1;
+      }
       return Column(
         children: <Widget>[
           Expanded(
             child: () {
               if (_currentTabIndex != unresolvedRequestsTab) {
                 return Container();
-              } else if (_requestController!.eventsState == ServerRequestState.waiting) {
-                return const Center(
-                  child: CircularProgressIndicator(strokeWidth: 4.0),
-                );
               } else {
-                return RefreshIndicator(
-                  onRefresh: _refreshList,
-                  child: Scrollbar(
-                    child: ListView.builder(
-                      shrinkWrap: true,
-                      itemCount: requests.length,
-                      itemBuilder: (_, index) {
-                        final request = requests[index];
-                        return RequestItem(
-                          request: request,
-                          onTap: () => _handleRequestPressed(request),
-                          onRequestUpdated: _onRequestUpdated,
-                          stream:
-                              request.view == SignRequest.viewNew ? _readController.stream : null,
-                        );
-                      },
-                    ),
-                  ),
-                );
+                switch (_requestController!.loadUnresolvedRequestsFuture!.status) {
+                  case FutureStatus.pending:
+                    return const Center(
+                      child: CircularProgressIndicator(strokeWidth: 4.0),
+                    );
+                  case FutureStatus.fulfilled:
+                    return RefreshIndicator(
+                      key: unresolvedRefreshkey,
+                      onRefresh: _refreshList,
+                      child: Scrollbar(
+                        child: ListView.builder(
+                          shrinkWrap: true,
+                          itemCount: itemCount,
+                          itemBuilder: (_, index) {
+                            return index < itemCount - 1 ||
+                                    (index == itemCount - 1 && !lastItemIsNavigation)
+                                ? _buildRequestItem(requests[index])
+                                : _buildNavigationItem();
+                          },
+                        ),
+                      ),
+                    );
+                  case FutureStatus.rejected:
+                    return const Text('Oops something went wrong');
+                }
               }
             }(),
           ),
@@ -449,8 +567,8 @@ class RequestsPageState extends State<RequestsPage> with SingleTickerProviderSta
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: <Widget>[
                   OutlinedButton(
-                    onPressed: selectedRequests.isNotEmpty ? () => _handleReject() : null,
-                    style: selectedRequests.isNotEmpty
+                    onPressed: _selectedRequests.isNotEmpty ? () => _handleReject() : null,
+                    style: _selectedRequests.isNotEmpty
                         ? OutlinedButton.styleFrom(
                             side: const BorderSide(width: 1.0, color: Colors.teal),
                           )
@@ -461,8 +579,8 @@ class RequestsPageState extends State<RequestsPage> with SingleTickerProviderSta
                     padding: EdgeInsets.all(15.0),
                   ),
                   OutlinedButton(
-                    onPressed: selectedRequests.isNotEmpty ? () => _handleSign() : null,
-                    style: selectedRequests.isNotEmpty
+                    onPressed: _selectedRequests.isNotEmpty ? () => _handleSign() : null,
+                    style: _selectedRequests.isNotEmpty
                         ? OutlinedButton.styleFrom(
                             side: const BorderSide(width: 1.0, color: Colors.teal),
                           )
@@ -490,28 +608,34 @@ class RequestsPageState extends State<RequestsPage> with SingleTickerProviderSta
             child: () {
               if (_currentTabIndex != currentTabIndex) {
                 return Container();
-              } else if (_requestController!.eventsState == ServerRequestState.waiting) {
-                return const Center(
-                  child: CircularProgressIndicator(strokeWidth: 4.0),
-                );
               } else {
-                return RefreshIndicator(
-                  onRefresh: _refreshList,
-                  child: Scrollbar(
-                    child: ListView.builder(
-                      shrinkWrap: true,
-                      itemCount: requests.length,
-                      itemBuilder: (_, index) {
-                        final request = requests[index];
-                        return RequestItem(
-                          request: request,
-                          onTap: () => _handleRequestPressed(request),
-                          onRequestUpdated: null,
-                        );
-                      },
-                    ),
-                  ),
-                );
+                switch (_requestController!.loadOtherRequestsFuture!.status) {
+                  case FutureStatus.pending:
+                    return const Center(
+                      child: CircularProgressIndicator(strokeWidth: 4.0),
+                    );
+                  case FutureStatus.fulfilled:
+                    return RefreshIndicator(
+                      key: otherRefreshkey,
+                      onRefresh: _refreshList,
+                      child: Scrollbar(
+                        child: ListView.builder(
+                          shrinkWrap: true,
+                          itemCount: requests.length,
+                          itemBuilder: (_, index) {
+                            final request = requests[index];
+                            return RequestItem(
+                              request: request,
+                              onTap: () => _handleRequestPressed(request),
+                              onRequestUpdated: null,
+                            );
+                          },
+                        ),
+                      ),
+                    );
+                  case FutureStatus.rejected:
+                    return const Text('Oops something went wrong');
+                }
               }
             }(),
           ),
@@ -557,14 +681,6 @@ class RequestsPageState extends State<RequestsPage> with SingleTickerProviderSta
               _onRequestsResult(result!);
             },
           ),
-          reaction(
-            (_) => _requestController!.requestResult,
-            // ignore: avoid_types_on_closure_parameters
-            (RequestResult? result) {
-              // Result will always be a real instance sent from RequestController
-              _onRequestResult(result!);
-            },
-          ),
         ];
       },
       child: WillPopScope(
@@ -586,16 +702,14 @@ class RequestsPageState extends State<RequestsPage> with SingleTickerProviderSta
                 icon: const Icon(Icons.refresh),
                 tooltip: 'Recargar',
                 onPressed: () {
-                  //showProcessingDialog(context, 'Actualizando ...');
-                  //processingDialog = true;
-                  _refreshList();
+                  _onRefreshList();
                 },
               ),
             ],
             bottom: TabBar(
               controller: _tabController,
               tabs: myTabs,
-              labelColor: Colors.white,
+              labelColor: const Color.fromRGBO(255, 255, 255, 1),
             ),
           ),
           body: TabBarView(
